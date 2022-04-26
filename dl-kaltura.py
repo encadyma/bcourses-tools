@@ -11,9 +11,11 @@
 ##
 
 ## Libraries
+import shutil
 import time
 import re
 import os
+import sys
 import requests
 # from selenium import webdriver
 from seleniumwire import webdriver
@@ -29,12 +31,22 @@ from tqdm.contrib.concurrent import thread_map
 
 ## STEP 0: Common variables
 DATA_LOCATION = "D:/Class/Lectures"
+IMPLICIT_WAIT_PERIOD = 10       # how long the driver should wait to find elements before quitting (general)
+IMPLICIT_LONG_PERIOD = 30       # how long the driver should wait to find elements before quitting (ajax/spa elements)
+LECTURE_FETCH_PERIOD = 10       # how long the driver should stream lectures to fetch all download links/resources
+FETCH_ALL_STALL_TIME = 3        # how long the driver should stall before expanding more through the expand button
+NUM_PARALLEL_THREADS = 5        # how many parallel threads to download lecture resources
+DRIVER_HEADLESS_MODE = True     # whether to run the driver in headless mode (browser does not show up)
+DRIVER_AUDIO_DISABLE = True     # whether to disable browser audio on the driver
 
 ## STEP 1: Start session and load cookies
 options = Options()
-options.add_argument("--headless")
+if DRIVER_HEADLESS_MODE:
+    options.add_argument("--headless")
+if DRIVER_AUDIO_DISABLE:
+    options.set_preference("media.volume_scale", "0.0")
 driver = webdriver.Firefox(options=options)
-driver.implicitly_wait(10)
+driver.implicitly_wait(IMPLICIT_WAIT_PERIOD)
 
 ## STEP 2: Direct to bcourses, then check auth.berkeley.edu
 BCOURSES_URL = "https://bcourses.berkeley.edu"
@@ -46,7 +58,7 @@ if auth.check_calnet_auth(driver):
     print("Performing authentication using credentials...")
     auth.perform_calnet_auth(driver, uid, pwd)
 
-wait = WebDriverWait(driver, 10)
+wait = WebDriverWait(driver, IMPLICIT_WAIT_PERIOD)
 if not wait.until(EC.url_contains(BCOURSES_URL)):
     raise Exception("Could not navigate to bCourses url")
 
@@ -92,6 +104,14 @@ print("\nSelected " + selected_class["name"])
 
 ## STEP 3.5: Initialize directory for video transfer
 final_dir = DATA_LOCATION + "/" + re.sub(r'[^\w\s\(\)]', '', selected_class["name"])
+if os.path.isdir(final_dir):
+    print("Folder already detected for this class in data directory.")
+    confirm_del = input("Delete this directory to proceed? (y/N): ")
+    if confirm_del.lower() != "y":
+        sys.exit(1)
+    print("Deleting class directory...")
+    shutil.rmtree(final_dir)
+
 os.makedirs(final_dir, exist_ok=False)
 
 ## STEP 4: Navigate to Kaltura and pull all videos
@@ -106,7 +126,7 @@ try:
     while True:
         expand_more = driver.find_element(By.CSS_SELECTOR, ".endless-scroll-more > .btn")
         expand_more.click()
-        time.sleep(3)
+        time.sleep(FETCH_ALL_STALL_TIME)
 except:
     print("Expanded all videos from the listing as possible.")
 
@@ -145,7 +165,7 @@ driver.switch_to.parent_frame()
 
 # Regex patterns
 re_vid = re.compile(r"\/(scf\/hls)\/p\/(\d+)\/sp\/(\d+)\/serveFlavor\/entryId\/(\w+)\/v\/\d+\/ev\/\d+\/flavorId\/(\w+)\/name\/([\w\.]+)\/seg-(\d+)-[\w\-]+.ts")
-re_str = re.compile(r"\/api_v3\/index.php\/service\/caption_captionAsset\/action\/serve\/captionAssetId\/(\w+)\/ks\/([\w\-]+)\/.srt")
+re_str = re.compile(r"\/api_v3\/index.php\/service\/caption_captionAsset\/action\/serve\/captionAssetId\/(\w+)\/ks\/([\w\-\_]+)\/.srt")
 
 print("Now processing detailed metadata and download links for all videos.")
 print("This process will take a while to complete.")
@@ -171,9 +191,16 @@ def process_gallery_item(gallery_item):
     driver.request_interceptor = read_requests
     driver.get(gallery_item.video_url)
 
+    wait = WebDriverWait(driver, IMPLICIT_LONG_PERIOD)
+    wait.until(EC.visibility_of_all_elements_located((By.CLASS_NAME, "userLink")))
     gallery_item.author = driver.find_element(By.CLASS_NAME, "userLink").text
+
+    wait = WebDriverWait(driver, IMPLICIT_LONG_PERIOD)
+    wait.until(EC.visibility_of_all_elements_located((By.CSS_SELECTOR, "#js-entry-create-at > span")))
     gallery_item.date_added = driver.find_element(By.CSS_SELECTOR, "#js-entry-create-at > span").text
 
+    wait = WebDriverWait(driver, IMPLICIT_LONG_PERIOD)
+    wait.until(EC.element_to_be_clickable((By.ID, "kplayer_ifp")))
     play_frame = driver.find_element(By.ID, "kplayer_ifp")
     driver.switch_to.frame(play_frame)
 
@@ -190,7 +217,7 @@ def process_gallery_item(gallery_item):
         time.sleep(0.1)
         pbar.set_description("Reading network")
     """
-    time.sleep(3)
+    time.sleep(LECTURE_FETCH_PERIOD)
 
     gallery_item.processed = True
     del driver.request_interceptor
@@ -229,10 +256,8 @@ with tqdm(gallery_items, position=0) as pbar:
 driver.close()
 
 ## STEP 5: Download all the lecture data in parallel
-NUM_PARALLEL = 5
-
 print()
-print("Downloading lecture data in parallel (# of streams: " + str(NUM_PARALLEL) + ").")
+print("Downloading lecture data in parallel (# of streams: " + str(NUM_PARALLEL_THREADS) + ").")
 print("This process will take very long depending on your internet speed,")
 print("but should take less time to finish towards the end.")
 
@@ -244,16 +269,24 @@ def download_lecture(gallery_item):
         if not os.path.exists(dl_path + "/" + fname):
             r = requests.get(dl_list[fname], stream=True)
             if r.status_code == 200:
+                total_length = int(r.headers.get("Content-Length"))
+                with tqdm.wrapattr(r.raw, "read", total=total_length, desc=gallery_item.title + " (" + fname + ")") as raw:
+                    # save the output to a file
+                    with open(dl_path + "/" + fname, 'wb') as output:
+                        shutil.copyfileobj(raw, output)
+                
+                """
                 with open(dl_path + "/" + fname, "wb") as f:
                     for chunk in r:
                         f.write(chunk)
+                """
             else:
                 print("Encountered unexpected status code", r.status_code, "while downloading", fname)
     
     gallery_item.downloaded = True
     return gallery_item
 
-next_items = thread_map(download_lecture, gallery_items, max_workers=NUM_PARALLEL)
+next_items = thread_map(download_lecture, gallery_items, max_workers=NUM_PARALLEL_THREADS, position=0)
 
 print()
 print("Status Report:")
