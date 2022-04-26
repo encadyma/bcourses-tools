@@ -151,7 +151,7 @@ class GalleryItem:
         return "(#" + self.str_index() + ") " + self.title + " - " + self.author
 
     def get_folder_name(self):
-        return re.sub(r'[^\w\s\(\)]', '', str(self))
+        return re.sub(r'[^\w\s\(\)\-]', '', str(self))
 
     def str_index(self):
         if self.index < 0:
