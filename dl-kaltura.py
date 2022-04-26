@@ -165,7 +165,7 @@ driver.switch_to.parent_frame()
 
 # Regex patterns
 re_vid = re.compile(r"\/(scf\/hls)\/p\/(\d+)\/sp\/(\d+)\/serveFlavor\/entryId\/(\w+)\/v\/\d+\/ev\/\d+\/flavorId\/(\w+)\/name\/([\w\.]+)\/seg-(\d+)-[\w\-]+.ts")
-re_str = re.compile(r"\/api_v3\/index.php\/service\/caption_captionAsset\/action\/serve\/captionAssetId\/(\w+)\/ks\/([\w\-\_]+)\/.srt")
+re_str = re.compile(r"\/api_v3\/index.php\/service\/caption_captionAsset\/action\/serve\/captionAssetId\/(\w+)(:?[\/\w]+)\/ks\/([\w\-]+)\/.srt")
 
 print("Now processing detailed metadata and download links for all videos.")
 print("This process will take a while to complete.")
